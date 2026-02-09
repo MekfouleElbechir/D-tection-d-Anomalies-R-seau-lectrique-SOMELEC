@@ -1,0 +1,190 @@
+version: '3.8'
+
+services:
+  # Kafka (KRaft mode)
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
+      KAFKA_LISTENERS: 'PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    networks:
+      - somelec-network
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 2>&1 | grep -q ApiVersion || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # Kafka Topic Initializer
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: >
+      bash -c "
+      echo 'Waiting for Kafka...';
+      sleep 10;
+      echo 'Creating topics...';
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --topic electrical-data-village-1 --partitions 1 --replication-factor 1;
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --topic electrical-data-village-2 --partitions 1 --replication-factor 1;
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --topic edge-model-weights --partitions 1 --replication-factor 1;
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --topic fog-aggregated-weights --partitions 1 --replication-factor 1;
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --topic global-model --partitions 1 --replication-factor 1;
+      echo 'Topics created!';
+      kafka-topics --list --bootstrap-server kafka:9092;
+      "
+    networks:
+      - somelec-network
+    
+
+  # Sensor Simulator Village 1
+  sensor-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    container_name: sensor-village-1
+    command: python edge/sensor_simulator.py --village-id 1 --broker kafka:9092 --duration 600
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    networks:
+      - somelec-network
+    volumes:
+      - ./edge:/app/edge
+      - ./fog:/app/fog
+      - ./cloud:/app/cloud
+
+  # Sensor Simulator Village 2
+  sensor-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    container_name: sensor-village-2
+    command: python edge/sensor_simulator.py --village-id 2 --broker kafka:9092 --duration 600
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    networks:
+      - somelec-network
+    volumes:
+      - ./edge:/app/edge
+      - ./fog:/app/fog
+      - ./cloud:/app/cloud
+
+  # Edge Spark Trainer Village 1
+  edge-spark-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+    container_name: edge-spark-village-1
+    command: python edge/edge_spark_trainer.py --village-id 1 --broker kafka:9092 --batch-duration 30
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    networks:
+      - somelec-network
+    volumes:
+      - ./edge:/app/edge
+    ports:
+      - "4040:4040"
+
+  # Edge Spark Trainer Village 2
+  edge-spark-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+    container_name: edge-spark-village-2
+    command: python edge/edge_spark_trainer.py --village-id 2 --broker kafka:9092 --batch-duration 30
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    networks:
+      - somelec-network
+    volumes:
+      - ./edge:/app/edge
+    ports:
+      - "4041:4040"
+
+  # Fog Spark Aggregator
+  fog-spark:
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+    container_name: fog-spark-region-1
+    command: python fog/fog_spark_aggregator.py --region-id 1 --num-villages 2 --broker kafka:9092 --window-duration 90
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    networks:
+      - somelec-network
+    volumes:
+      - ./fog:/app/fog
+    ports:
+      - "4042:4040"
+
+  # Cloud Server
+  cloud:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    container_name: cloud-server
+    command: python cloud/cloud_server.py --num-regions 1 --broker kafka:9092 --max-rounds 10
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    networks:
+      - somelec-network
+    volumes:
+      - ./cloud:/app/cloud
+
+  # Dashboard Streamlit
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    container_name: dashboard
+    command: streamlit run dashboard/streamlit_dashboard.py --server.port 8501 --server.address 0.0.0.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    networks:
+      - somelec-network
+    volumes:
+      - ./dashboard:/app/dashboard
+    ports:
+      - "8501:8501"
+
+networks:
+  somelec-network:
+    driver: bridge

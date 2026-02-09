@@ -1,0 +1,25 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install Java 21 and system dependencies
+RUN apt-get update && apt-get install -y \
+    openjdk-21-jre-headless \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set JAVA_HOME
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python packages
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY edge/ ./edge/
+COPY fog/ ./fog/
+
+CMD ["python", "--version"]
