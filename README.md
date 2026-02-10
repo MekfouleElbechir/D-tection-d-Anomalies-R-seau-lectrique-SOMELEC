@@ -343,4 +343,3 @@ Sujet 1: Détection d'anomalies réseau électrique
 
 ---
 
-**Bon Courage! 🚀⚡**
